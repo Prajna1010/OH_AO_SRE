@@ -1,0 +1,135 @@
+# Path to the configuration file
+$confFile = "D:\Omnicell_Cabinet_Monitoring/variables.conf"
+
+# Read the configuration file
+$confContent = Get-Content $confFile
+
+# Initialize variables
+$cabinetListPath = ""
+$omniserverIP = ""
+$snowUserName = ""
+$snowPasswordPath = ""
+$snowAPI = ""
+$outputCSVPath = ""
+$resultsArray = @()
+$failed_list = @()
+$s=0
+
+# Loop through each line in the configuration file
+foreach ($line in $confContent) {
+    $line = $line.Trim()
+    
+    # Check if the line contains the cabinetListPath(Path of csv with cabinets details)
+    if ($line -match "^cabinetListPath=(.+)$") {
+        $cabinetListPath = $matches[1]
+    }
+    
+    # Check if the line contains the omniserverIP(Omnicell Server IP)
+    if ($line -match "^omniserverIP=(.+)$") {
+        $omniserverIP = $matches[1]
+    }
+    # Check if the line contains the snowUserName
+    if ($line -match "^snowUserName=(.+)$") {
+        $snowUserName = $matches[1]
+    }
+    # Check if the line contains the snowPasswordPath
+    if ($line -match "^snowPasswordPath=(.+)$") {
+        $snowPasswordPath = $matches[1]
+    }
+    # Check if the line contains the snowAPI
+    if ($line -match "^snowAPI=(.+)$") {
+        $snowAPI = $matches[1]
+    }
+    # Check if the line contains the outputCSVPath
+    if ($line -match "^outputCSVPath=(.+)$") {
+        $outputCSVPath = $matches[1]
+    }
+    # Check if the line contains the passwordRetrieval script
+    if ($line -match "^pwd=(.+)$") {
+        $pwd = $matches[1]
+    }
+    # Check if the line contains the shortdes
+    if ($line -match "^shortdes=(.+)$") {
+        $shortdes = $matches[1]
+    }
+}
+
+
+#Getting snow password from PasswordState
+$password = & $pwd
+
+#Get the cabinet details
+$data = Import-Csv -Path $cabinetListPath
+
+#Loop through each cabinet and ping their IP
+foreach ($row in $data) {
+try{
+	$a=Get-Date -Format 'dd/MM/yyyy HH:mm:ss'
+    	$result = Test-Connection -ComputerName $row.IP -Source $omniserverIP -Count 2 -ErrorAction Stop
+	if($result.StatusCode -eq 0){
+		$b=100
+		$c="Success"
+	}
+	else{
+		$b=500
+		$c="Failed"
+		
+	}
+}
+catch{
+	#Write-Host "Testing connection failed: $($_.Exception.Message)"	
+	$b=500
+	$c="Failed"
+	$failed_list += $row.ID+" ,"
+	$s++
+}
+#Get ping status in array
+$pingResult =  [PSCustomObject]@{
+	_time = $a+" +0000"
+        source_host = "WATOCCENTER01"+" : "+$row.ID
+	metric_label = "Service : Service Status"
+	instance = $row.ID
+	metric_value=$b
+	metric_unit ="n/a"
+        alert_value="500"
+	tower = "Clinical"
+	threshold1 = 0
+	threshold2 = 100
+	threshold3 = 500
+	threshold4 = 600
+	blacklist_alerts="1"
+	add_info="N/A"
+    }
+    $resultsArray += $pingResult
+}
+
+#Get ping status details array in csv
+$resultsArray | Export-Csv -Path $outputCSVPath -NoTypeInformation
+
+#Create incident for unreachable cabinets
+if($s -gt 0){
+$headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+$headers.Add("Content-Type", "application/json")
+$pair = "$($snowUserName):$($password)"
+$encodedCreds = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($pair))
+$basicAuthValue = "Basic $encodedCreds"
+$headers.Add("Authorization", $basicAuthValue )
+$body = @"
+{
+`"u_caller`": `"`",
+`"u_callback_number`": `"NA`",
+`"u_impact`": `"3`",
+`"u_urgency`": `"2`",
+`"u_best_time_to_call`":`"NA`",
+`"u_channel`": `"Email`",
+`"u_assignment_group`": `"ACN-Non IS System Administrators`",
+`"u_short_description`": `"$shortdes -`",
+`"u_category`": `"Applications`",
+`"u_sub_category`": `"Other`",
+`"u_description`": `"$failed_list`"
+}
+"@
+$response = Invoke-RestMethod $snowAPI -Method 'POST' -Headers $headers -Body $body
+$m = $response.result.display_value 
+Write-Host " Incident : $m"
+}
