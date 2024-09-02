@@ -1,92 +1,63 @@
-
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-	$smtpServer = "smtp.ohiohealth.com"
-	$smtpPort = 25 
-	$smtpUsername = "OH.AO.SRE.Automation@ohiohealth.com"    
-	$from = "OH.AO.SRE.Automation@ohiohealth.com"
-	$to = "OH-ACN-VoiceBoutique@ohiohealth.com"
-	$subject = "Vocera Speech Port Alert - Threshold Breached"
-	
-	$EncryptionKeyData = Get-Content "D:\Vocera_log_monitoring\enc.key"
-	$PasswordSecureString = Get-Content "D:\Vocera_log_monitoring\secret.encrypted" | ConvertTo-SecureString -Key $EncryptionKeyData
-	$PlainTextPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($PasswordSecureString))
-
-	$credential = New-Object System.Management.Automation.PSCredential($smtpUsername, (ConvertTo-SecureString $PlainTextPassword -AsPlainText -Force))
+	$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 	$a= @()
-	$resultsArray= @()
-	$s=0
+	$m=0
 	$c=0
+	$EncryptionKeyData = Get-Content "D:\Vocera_log_monitoring\s.key"
+	$PasswordSecureString = Get-Content "D:\Vocera_log_monitoring\voc.encrypted" | ConvertTo-SecureString -Key $EncryptionKeyData
+	$pass = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($PasswordSecureString))
+
 	$directoryPath = "D:\vocera\logs"
-	$pattern = "log*.txt"
+	$pattern = "vtg*.txt"
 	$lastRunFilePath = "D:\Vocera_log_monitoring\Timestamp.txt"
 	$lastRunTimestamp = Get-Content -Path $lastRunFilePath
 	$dateTime = ([DateTime]::Parse($lastRunTimestamp))
 	$logFiles = Get-ChildItem -Path $directoryPath -Filter $pattern | Where-Object { $_.LastWriteTime -gt $dateTime }
-if ($logFiles.Count -gt 0){	
-	foreach ($logFile in $logFiles){
-	$m="D:\vocera\logs\$logFile"
-		
-	$logContent = Get-Content -Path $m
+if($logFiles.Count -gt 0){
+	foreach ($logFile in $logFiles) {
+	$s="D:\vocera\logs\$logFile"
+	$logContent = Get-Content -Path $s
 	foreach ($line in $logContent) {
-		if ($line -like "*SpeechPorts=*") {
-			$match1 = [regex]::Match($line, "SpeechPorts=(\d+)")
-    			if ($match1.Success) {
-        			$speechPorts = $match1.Groups[1].Value
-				break
-    			}
-   		}
-	}
-	for ($i = $logContent.Length - 1; $i -ge 0; $i--) {
-		$line = $logContent[$i]
-		if ($line -like "*Free speech ports count:*") {
-			$match = [regex]::Match($line, "Free speech ports count: '(\d+)'")
-    			if ($match.Success) {
-        			$freePorts = $match.Groups[1].Value
-				break
-    			}
-   		}
-	}
-	if($freePorts -ne $null){
-		$comment = "Count found"
-		$s=11
-		$p=0.10*$speechPorts
-		if($s -gt $freePorts -or $p -gt $freePorts){
-			$status="Below threshold"
+		if ($line -like "*Is NOT alive*") {
+			$comment="Phrase *Is NOT alive* found"
 			$c++
 			$a+=@"
 Log file name: $logFile
-Free speech port count: $freePorts
- 
-"@			
-		}
-		else{
-			$status="Above threshold"
-		}
+"@		
+			break
+   		}
+				
 	}
-	else{
-		$comment="Free speech ports count - not found"
-	}
-	
-	$log_extract =  [PSCustomObject]@{
-		date_time=Get-date	
-		log_name=$logFile
-		total_speech_port=$speechPorts
-		free_ports_count=$freePorts
-		status=$status
-		comment=$comment
-	}
-		
-	$resultsArray += $log_extract
-	}
-	$body = "$a"
-	if($c -gt 0){
-		Send-MailMessage -From $from -To $to -Subject $subject -Body $body -SmtpServer $smtpServer -Port $smtpPort -Credential $credential
-	}
-
-$resultsArray | Export-Csv -Path "D:\Vocera_log_monitoring\Vocera_log\log_$timestamp.csv" -NoTypeInformation
 }
-#Get-Date | Out-File -FilePath $lastRunFilePath -Force
-
--ExecutionPolicy Bypass -File D:\Vocera_log_monitoring\vocera.ps1
-
-
+	if($c -gt 0){
+		$headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+		$headers.Add("Content-Type", "application/json")
+		$user = 'sn.sre'
+		$pair = "$($user):$($pass)"
+		$encodedCreds = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($pair))
+		$basicAuthValue = "Basic $encodedCreds"
+		$headers.Add("Authorization", $basicAuthValue )
+$body = @"
+{
+`"u_caller`": `"`",
+`"u_callback_number`": `"5672417400`",
+`"u_impact`": `"1`",
+`"u_urgency`": `"1`",
+`"u_best_time_to_call`":`"54`",
+`"u_channel`": `"Email`",
+`"u_assignment_group`": `"ACN-Voice App`",
+`"u_short_description`": `Vocera-TG -"Is Not alive"`",
+`"u_category`": `"Applications`",
+`"u_sub_category`": `"Other`",
+`"u_description`": `"The phrase "Is NOT alive" found in the logs - $a`"
+}
+"@
+	$response = Invoke-RestMethod 'https://ohiohealth.service-now.com/api/now/import/u_sre_automation' -Method 'POST' -Headers $headers -Body $body
+	$m = $response.result.display_value 
+	Write-Host "Incident# : $m"
+		
+	}
+}
+}
+$result = "Script run successful - $m" 
+Add-Content -Path "D:\Vocera_log_monitoring\Vocera_log\log_$timestamp.csv" -Value $result
+Get-Date | Out-File -FilePath $lastRunFilePath -Force
